@@ -1,3 +1,15 @@
+# This script currently utilizes the YOLOv8 keypoint model to identify the back of the compartment holding
+# the jetson nano of the lead vehicle WITHOUT LED beacon attachments. The YOLOv8 model is trained to
+# identify the back of the vehicle and mark the 4 corners of the back in order to construct the necessary
+# points needed for its yaw, in relation to the follower vehicle. The depth camera also utilizes these points
+# to calculate the xyz coordinates/position of the lead vehicle. The formatData function currently
+# converts the xyz and yaw data into hexadecimal digits for serial communication with CAN.
+
+# Notes concerning current YOLOv8 model:
+# Keypoint location is somewhat inconsistent with movement which is likely due to not having a
+# consistent point when annotating/training the model leading to floating in tests. Could also
+# be due to lack of image data/variation used in training.
+
 import pyrealsense2 as rs
 import numpy as np
 import cv2
@@ -6,7 +18,7 @@ import math
 import serial
 import time
 
-# to convert metrics for testing
+# to convert metrics for testing (meters to inches)
 MTI = 39.37
 
 # meters per bit for hex conversion
@@ -14,6 +26,11 @@ DIST_MPB = 0.00245
 LR_MPB = 0.0196
 UD_MPB = 0.0625
 YAW_MPB = 0.625
+
+# Depth camera streaming settings
+RES_WIDTH = 640
+RES_HEIGHT = 480
+FPS = 30
 
 def main():
     # ser = serial.Serial('COM3', 9600, timeout=1) # open when serial is needed
@@ -23,15 +40,15 @@ def main():
     config = rs.config()
 
     # streaming settings
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    config.enable_stream(rs.stream.color, RES_WIDTH, RES_HEIGHT, rs.format.bgr8, FPS)
+    config.enable_stream(rs.stream.depth, RES_WIDTH, RES_HEIGHT, rs.format.z16, FPS)
 
     pipeline.start(config)
 
-    # select machine learning model to use
+    # select machine learning model
     model = YOLO("BOVKeypointModel2.pt")
 
-    # aligns color and depth streams
+    # for color and depth stream alignment
     align = rs.align(rs.stream.color)
 
     try:
@@ -45,26 +62,29 @@ def main():
                 continue
             
             color_image = np.asanyarray(color_frame.get_data())
+
+            # use ML model on aligned frame
             results = model(color_image)
 
-            # define array of keypoint coordinates in resolution coords
-            points_res = [[-1, -1] for _ in range(4)]
+            # initialize array of keypoint coordinates in resolution coords (RES_WIDTHxRES_HEIGHT)
+            points_rc = [[-1, -1] for _ in range(4)]
 
-            # define array of keypoint coordinates in 3D
-            points = [[-1, -1, -1] for _ in range(4)]
+            # initialize array of keypoint coordinates in meters (x, y, z)
+            points_mc = [[-1, -1, -1] for _ in range(4)]
 
             # extract data from keypoints and translate into 3D coordinates
             for result in results:
-                # kps = result.keypoints.xy
-                # confs = result.keypoints.conf
                 boxes = result.boxes
                 for box in boxes:
                     box_conf = box.conf
+                    # continue code if back identified is more than 70% confident
                     if box_conf <= 0.7:
                         continue
                     print(f"back detected")
+                    # get box dimensions and display on stream
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     cv2.rectangle(color_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
                     for kps in result.keypoints.xy:
                         confs = result.keypoints.conf
                         for i in range(4):
@@ -74,9 +94,9 @@ def main():
                             y = int(kps[i][1])
                             
                             # convert to 3D coordinates
-                            if x == 640:
+                            if x == RES_WIDTH:
                                 x -= 1
-                            if y == 480:
+                            if y == RES_HEIGHT:
                                 y -= 1
                             depth = depth_frame.get_distance(x, y)
                             depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
@@ -86,26 +106,26 @@ def main():
                             cv2.circle(color_image, (x, y), 2, (0, 0, 255), 1)
 
                             # add into arrays
-                            points_res[i] = [x, y]
-                            points[i] = point
-                            print(f"Keypoint {i} depth: {depth}, coords: {points[i]}")
+                            points_rc[i] = [x, y]
+                            points_mc[i] = point
+                            print(f"Keypoint {i} depth: {depth}, coords: {points_mc[i]}")
             
             # use 3D coordinates to find direction/angle of vehicle
             # first check if the points exist (need 3 existing)
-            n = calculateNormal(points)
+            n = calculateNormal(points_mc)
             if n[0] == -1:
                 print(f"3 points could not be identified\n")
             else:
                 yaw = getYaw(n)
-                p1 = int((points_res[0][0] + points_res[3][0]) / 2)
-                p2 = int((points_res[0][1] + points_res[1][1]) / 2)
+                p1 = int((points_rc[0][0] + points_rc[3][0]) / 2)
+                p2 = int((points_rc[0][1] + points_rc[1][1]) / 2)
                 z = depth_frame.get_distance(p1, p2)
                 cv2.circle(color_image, (p1, p1), 2, (255, 0, 0), 1)
                 depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
                 point = rs.rs2_deproject_pixel_to_point(depth_intrin, [x, y], z)
                 print(f"X: {round(point[0] * MTI, 2)}, Y: {round(point[1] * MTI, 2)}, Z: {round(point[2] * MTI, 2)}, Yaw: {round(yaw, 2)}")
 
-                # format data for CAN bus (x = back and forth, y = up and down, z = left and right)
+                # format data for CAN bus (x = left and right, y = up and down, z = back and forth)
                 data = formatData(x, y, z, yaw)
 
                 # ser.write(data)
@@ -140,6 +160,8 @@ def calculateNormal(points):
     u = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]]
     v = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]]
     n = [u[1]*v[2] - u[2]*v[1], u[2]*v[0] - u[0]*v[2], u[0]*v[1] - u[1]*v[0]]
+
+    # keep normal plane consistent
     if n[2] < 0:
         n[2] = -n[2]
 
@@ -148,16 +170,16 @@ def calculateNormal(points):
 def getYaw(n):
     yaw_rad = math.atan2(n[2], n[0])
     yaw_deg = math.degrees(yaw_rad)
-    return yaw_deg #- 90 # ?
+    return yaw_deg
 
 # format data into CAN bus hex number 0x370 00(x) 0(y) 000(z) 00(yaw angle)
-# for distances up to ~10m (0.00245m per bit for 4096), left/right (-2.5m to 2.5m, 0.0196m per bit for 256)
-# up/down (-0.5m to 0.5m, 0.0625m per bit for 16), angle (-80 to 80 degrees, 0.625 degrees per bit for 256)
+# for depth up to ~10m (0.00245m per bit for 4096), left/right from -2.5m to 2.5m (0.0196m per bit for 256),
+# up/down from -0.5m to 0.5m (0.0625m per bit for 16), yaw angle from -80 to 80 degrees (0.625 degrees per bit for 256)
 def formatData(x, y, z, yaw):
     # format distance (depth)
     z_hex = hex(round(z / DIST_MPB))
 
-    # format left/right, can be negative so normalize: 0 = 128
+    # format left/right, can be negative so normalize: 0m = 128 bits
     if abs(x) >= (256 * LR_MPB / 2):
         if x < 0:
             x_hex = hex(0)
@@ -169,7 +191,7 @@ def formatData(x, y, z, yaw):
         else:
             x_hex = hex(round(x / LR_MPB) + 128)
 
-    #format up/down (0 = 8)
+    # format up/down (0m = 8 bits)
     if abs(y) >= (16 * UD_MPB / 2):
         if y < 0:
             y_hex = hex(0)
@@ -181,7 +203,7 @@ def formatData(x, y, z, yaw):
         else:
             y_hex = hex(round(y / UD_MPB) + 8)
 
-    #format yaw angle (0 = 128)
+    # format yaw angle (0m = 128 bits)
     if abs(yaw) >= 2.5088:
         if yaw < 0:
             yaw_hex = hex(0)
