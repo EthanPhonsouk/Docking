@@ -7,7 +7,7 @@
 
 # Notes concerning current YOLOv8 model:
 # Keypoint location is somewhat inconsistent with movement which is likely due to not having a
-# consistent point when annotating/training the model leading to floating in tests. Could also
+# consistent point when annotating/training the model leading to floating in application. Could also
 # be due to lack of image data/variation used in training.
 
 import pyrealsense2 as rs
@@ -123,7 +123,7 @@ def main():
                 cv2.circle(color_image, (p1, p1), 2, (255, 0, 0), 1)
                 depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
                 point = rs.rs2_deproject_pixel_to_point(depth_intrin, [x, y], z)
-                print(f"X: {round(point[0] * MTI, 2)}, Y: {round(point[1] * MTI, 2)}, Z: {round(point[2] * MTI, 2)}, Yaw: {round(yaw, 2)}")
+                print(f"X: {round(-point[0] * MTI, 2)}, Y: {-round(point[1] * MTI, 2)}, Z: {round(point[2] * MTI, 2)}, Yaw: {round(yaw, 2)}")
 
                 # format data for CAN bus (x = left and right, y = up and down, z = back and forth)
                 data = formatData(x, y, z, yaw)
@@ -180,28 +180,22 @@ def formatData(x, y, z, yaw):
     z_hex = hex(round(z / DIST_MPB))
 
     # format left/right, can be negative so normalize: 0m = 128 bits
-    if abs(x) >= (256 * LR_MPB / 2):
+    if abs(x) >= (256 * LR_MPB):
         if x < 0:
             x_hex = hex(0)
         else:
             x_hex = hex(255)
     else:
-        if x < 0:
-            x_hex = hex(128 + round(x / LR_MPB))
-        else:
-            x_hex = hex(round(x / LR_MPB) + 128)
+        x_hex = hex(128 + round(x / LR_MPB))
 
     # format up/down (0m = 8 bits)
-    if abs(y) >= (16 * UD_MPB / 2):
+    if abs(y) >= (16 * UD_MPB):
         if y < 0:
             y_hex = hex(0)
         else:
             y_hex = hex(15)
     else:
-        if y < 0:
-            y_hex = hex(8 + round(y / UD_MPB))
-        else:
-            y_hex = hex(round(y / UD_MPB) + 8)
+        y_hex = hex(8 + round(y / UD_MPB))
 
     # format yaw angle (0m = 128 bits)
     if abs(yaw) >= 2.5088:
@@ -210,10 +204,7 @@ def formatData(x, y, z, yaw):
         else:
             yaw_hex = hex(255)
     else:
-        if yaw < 0:
-            yaw_hex = hex(128 + round(yaw / YAW_MPB))
-        else:
-            yaw_hex = hex(round(yaw / YAW_MPB) + 128)
+        yaw_hex = hex(128 + round(yaw / YAW_MPB))
 
     return "370" + x_hex.removeprefix("0x") + y_hex.removeprefix("0x") + z_hex.removeprefix("0x") + yaw_hex.removeprefix("0x")
 
