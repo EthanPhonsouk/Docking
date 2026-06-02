@@ -3,12 +3,14 @@
 # identify the back of the vehicle and mark the 4 corners of the back in order to construct the necessary
 # points needed for its yaw, in relation to the follower vehicle. The depth camera also utilizes these points
 # to calculate the xyz coordinates/position of the lead vehicle. The formatData function currently
-# converts the xyz and yaw data into hexadecimal digits for serial communication with CAN.
+# converts the xyz and yaw data into hexadecimal digits for possible serial communication with CAN.
 
 # Notes concerning current YOLOv8 model:
 # Keypoint location is somewhat inconsistent with movement which is likely due to not having a
 # consistent point when annotating/training the model leading to floating in application. Could also
-# be due to lack of image data/variation used in training.
+# be due to lack of image data/variation used in training. Update: lack of elevation change in image
+# data and not enough images at every angle/distance is likely the factor of inconsistency and drift
+# of keypoints.
 
 import pyrealsense2 as rs
 import numpy as np
@@ -117,10 +119,14 @@ def main():
                 print(f"3 points could not be identified\n")
             else:
                 yaw = getYaw(n)
+
+                # get coordinates of center of vehicle with average keypoint position
                 p1 = int((points_rc[0][0] + points_rc[3][0]) / 2)
                 p2 = int((points_rc[0][1] + points_rc[1][1]) / 2)
                 z = depth_frame.get_distance(p1, p2)
                 cv2.circle(color_image, (p1, p1), 2, (255, 0, 0), 1)
+
+                # convert center coordinates to meters and display
                 depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
                 point = rs.rs2_deproject_pixel_to_point(depth_intrin, [x, y], z)
                 print(f"X: {round(-point[0] * MTI, 2)}, Y: {-round(point[1] * MTI, 2)}, Z: {round(point[2] * MTI, 2)}, Yaw: {round(yaw, 2)}")
@@ -128,11 +134,14 @@ def main():
                 # format data for CAN bus (x = left and right, y = up and down, z = back and forth)
                 data = formatData(x, y, z, yaw)
 
+                # write the serial data and display
                 # ser.write(data)
                 print(f"Data in hex: {data}\n")
 
             cv2.imshow('RBG Stream', color_image)
             key = cv2.waitKey(1)
+
+            # stop when 'q' or 'esc' is pressed
             if key & 0xFF == ord('q') or key == 27:
                 cv2.destroyAllWindows()
                 break
@@ -153,6 +162,7 @@ def calculateNormal(points):
                 p3 = point
             i += 1
     
+    # return vector outside of range if less than 3 valid points
     if i < 3:
         return [-1, -1, -1]
 
@@ -161,7 +171,7 @@ def calculateNormal(points):
     v = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]]
     n = [u[1]*v[2] - u[2]*v[1], u[2]*v[0] - u[0]*v[2], u[0]*v[1] - u[1]*v[0]]
 
-    # keep normal plane consistent
+    # keep normal plane consistent (only viewing from the back)
     if n[2] < 0:
         n[2] = -n[2]
 
@@ -169,7 +179,7 @@ def calculateNormal(points):
 
 def getYaw(n):
     yaw_rad = math.atan2(n[2], n[0])
-    yaw_deg = math.degrees(yaw_rad)
+    yaw_deg = math.degrees(yaw_rad) - 90
     return yaw_deg
 
 # format data into CAN bus hex number 0x370 00(x) 0(y) 000(z) 00(yaw angle)
