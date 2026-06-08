@@ -1,5 +1,5 @@
-# This script currently utilizes the YOLOv8 keypoint model to identify the back of the compartment holding
-# the jetson nano of the lead vehicle WITH LED beacon attachments. The YOLOv8 model is trained to
+# This script currently utilizes the YOLO26 keypoint model to identify the back of the compartment holding
+# the jetson nano of the lead vehicle WITH LED beacon attachments. The YOLO26 model is trained to
 # identify the back of the vehicle and mark the center of each beacon in order to construct the necessary
 # points needed for its yaw, in relation to the follower vehicle. The depth camera also utilizes these points
 # to calculate the xyz coordinates/position of the lead vehicle. The formatData function currently
@@ -45,7 +45,7 @@ def main():
     pipeline.start(config)
 
     # select machine learning model
-    model = YOLO("BOVandBeaconKPModel.pt")
+    model = YOLO("BOVandBeaconKPModel2.pt")
 
     # for color and depth stream alignment
     align = rs.align(rs.stream.color)
@@ -77,16 +77,16 @@ def main():
             for result in results:
                 for i, box in enumerate(result.boxes):
                     # check if it's a beacon or the center of the vehicle
-                    if model.names[int(box.cls[i])] == 'beacons':
-                        if box.conf[i] < 0.6:
+                    if model.names[int(box.cls)] == 'beacons':
+                        if float(box.conf) < 0.7:
                             continue
                         print(f"beacons detected")
                         # get box dimensions and display on stream
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         cv2.rectangle(color_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                        for j, kp in enumerate(result.keypoints.data[i]):
+                        for j, kp in enumerate(result.keypoints.xy[i]):
                             # confidence of keypoint j of object i
-                            if kp[2] < 0.6:
+                            if result.keypoints.conf[i][j] < 0.7:
                                 continue
                             x = int(kp[0])
                             y = int(kp[1])
@@ -101,38 +101,38 @@ def main():
                             point = rs.rs2_deproject_pixel_to_point(depth_intrin, [x, y], depth)
 
                             if j == 0:
-                                cv2.circle(color_image, (x, y), 2, (0, 0, 255), 1) # red
+                                cv2.circle(color_image, (x, y), 4, (0, 0, 255), 3) # red
                             elif j == 1:
-                                cv2.circle(color_image, (x, y), 2, (255, 0, 0), 1) # blue
+                                cv2.circle(color_image, (x, y), 4, (255, 0, 0), 3) # blue
                             elif j == 2:
-                                cv2.circle(color_image, (x, y), 2, (0, 255, 0), 1) # green
+                                cv2.circle(color_image, (x, y), 4, (0, 255, 0), 3) # green
                             elif j == 3:
-                                cv2.circle(color_image, (x, y), 2, (255, 0, 255), 1) # purple
+                                cv2.circle(color_image, (x, y), 4, (255, 0, 255), 3) # purple
                             else:
-                                cv2.circle(color_image, (x, y), 2, (0, 0, 0), 1) # black
+                                cv2.circle(color_image, (x, y), 4, (0, 0, 0), 3) # black
 
                             # add into arrays
                             points_rc[j] = [x, y]
                             points_mc[j] = point
                             print(f"Keypoint {j} depth: {depth}, coords: {points_mc[j]}")
-                    elif model.names[int(box.cls[i])] == 'vehicle':
-                        if box.conf[i] < 0.6:
+                    elif model.names[int(box.cls)] == 'vehicle':
+                        if float(box.conf) < 0.7:
                             continue
-                        if result.keypoints.data[i][2] < 0.6:
+                        if result.keypoints.conf[i][0] < 0.7:
                             continue
                         print(f"vehicle with center detected")
                         centerFound = True
                         # get box dimensions and display on stream
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        cv2.rectangle(color_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        cv2.rectangle(color_image, (x1, y1), (x2, y2), (0, 0, 255), 3)
 
-                        cx = int(result.keypoints.data[i][0])
-                        cy = int(result.keypoints.data[i][1])
+                        cx = int(result.keypoints.xy[i][0][0])
+                        cy = int(result.keypoints.xy[i][0][1])
                         cz = depth_frame.get_distance(cx, cy)
-                        cv2.circle(color_image, (cx, cy), 2, (255, 255, 255), 1) # white
+                        cv2.circle(color_image, (cx, cy), 4, (255, 255, 255), 3) # white
                         # convert center coordinates to meters and display
                         depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
-                        point = rs.rs2_deproject_pixel_to_point(depth_intrin, [cx, cy], cz)
+                        centerCoords = rs.rs2_deproject_pixel_to_point(depth_intrin, [cx, cy], cz)
             # calculate yaw using detected beacon positions
             # first check if the points exist (need 3 existing)
             n = calculateNormal(points_mc)
@@ -165,11 +165,11 @@ def main():
             # MAYBE IMPORTANT: assuming that if 3 beacons are detected, then center should be in view as well
             if locatable:
                 # print coords to center with yaw
-                print(f"Inches: X: {round(cx * MTI, 2)}, Y: {round(cy * MTI, 2)}, Z: {round(cz * MTI, 2)}, Yaw: {round(yaw, 2)}")
-                print(f"Meters: X: {round(cx, 2)}, Y: {round(cy, 2)}, Z: {round(cz, 2)}, Yaw: {round(yaw, 2)}")
+                print(f"Inches: X: {round(centerCoords[0] * MTI, 2)}, Y: {round(centerCoords[1] * MTI, 2)}, Z: {round(centerCoords[2] * MTI, 2)}, Yaw: {round(yaw, 2)}")
+                print(f"Meters: X: {round(centerCoords[0], 2)}, Y: {round(centerCoords[1], 2)}, Z: {round(centerCoords[2], 2)}, Yaw: {round(yaw, 2)}")
                 
                 # format data for CAN bus (x = left and right, y = up and down, z = back and forth)
-                data = formatData(cx, cy, cz, yaw, translate)
+                data = formatData(centerCoords[0], centerCoords[1], centerCoords[2], yaw, translate)
                 
                 # write the serial data and display
                 # ser.write(data)
@@ -244,7 +244,10 @@ def translateDetections(points_rc, centerFound):
 # up/down from -0.5m to 0.5m (0.0625m per bit for 16), yaw angle from -80 to 80 degrees (0.625 degrees per bit for 256)
 def formatData(x, y, z, yaw, translate):
     # format distance (depth)
-    z_hex = hex(round(z / DIST_MPB))
+    if z >= 4096 * DIST_MPB:
+        z_hex = hex(4096)
+    else:
+        z_hex = hex(round(z / DIST_MPB))
 
     # format left/right, can be negative so normalize: 0m = 128 bits
     if abs(x) >= (256 * LR_MPB) / 2:
@@ -276,6 +279,6 @@ def formatData(x, y, z, yaw, translate):
     if translate == 0:
         yaw_hex = hex(128)
 
-    return "370" + x_hex.removeprefix("0x") + y_hex.removeprefix("0x") + z_hex.removeprefix("0x") + yaw_hex.removeprefix("0x")
+    return "0x370 " + x_hex.removeprefix("0x") + y_hex.removeprefix("0x") + z_hex.removeprefix("0x") + yaw_hex.removeprefix("0x")
 
 main()
