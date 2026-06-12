@@ -6,8 +6,9 @@
 # converts the xyz and yaw data into hexadecimal digits for possible serial communication with CAN.
 # This script is currently made to run on a pc with a keyboard.
 
-# Notes concerning current YOLOv8 model:
-# 
+# Notes concerning current YOLO26 model:
+# still has floating points when in unfamiliar positions (mostly at different heights and rotations
+# of the depth camera (pitch and roll))
 
 import pyrealsense2 as rs
 import numpy as np
@@ -16,6 +17,7 @@ from ultralytics import YOLO
 import math
 import serial
 import time
+import csv
 
 # to convert metrics for testing (meters to inches)
 MTI = 39.37
@@ -164,6 +166,11 @@ def main():
             
             # MAYBE IMPORTANT: assuming that if 3 beacons are detected, then center should be in view as well
             if locatable:
+                # for writing to csv file
+                # with open("output.csv", mode="a", newline="", encoding="utf-8") as file:
+                #     writer = csv.writer(file)
+                #     data = (f"{centerCoords[0]} {centerCoords[1]} {centerCoords[2]} {yaw}")
+                #     writer.writerow([data])
                 # print coords to center with yaw
                 print(f"Inches: X: {round(centerCoords[0] * MTI, 2)}, Y: {round(centerCoords[1] * MTI, 2)}, Z: {round(centerCoords[2] * MTI, 2)}, Yaw: {round(yaw, 2)}")
                 print(f"Meters: X: {round(centerCoords[0], 2)}, Y: {round(centerCoords[1], 2)}, Z: {round(centerCoords[2], 2)}, Yaw: {round(yaw, 2)}")
